@@ -231,45 +231,56 @@ function SolarUI:CreateWindow(args)
 		return true
 	end
 
-	function Window:Notify(args)
-		args = args or {}
-		local text = args.Text or "Notification"
-		local duration = args.Time or 3
+function Window:Notify(args)
+	args = args or {}
+	local text = args.Text or "Notification"
+	local sub = args.SubText or ""
+	local duration = args.Time or 3
 
-		local Msg = Instance.new("Frame", MsgHolder)
-		Msg.AnchorPoint = Vector2.new(1, 0)
-		Msg.Position = UDim2.new(1.2, 0, 0.05, 0)
-		Msg.Size = UDim2.new(0, 240, 0, 40)
-		Msg.BackgroundColor3 = Color3.fromRGB(18,18,22)
-		Instance.new("UICorner", Msg).CornerRadius = UDim.new(0, 10)
-		local stroke = Instance.new("UIStroke", Msg)
-		stroke.Color = ActiveTheme.Color
-		stroke.Transparency = 0.4
+	local Msg = Instance.new("Frame", MsgHolder)
+	Msg.AnchorPoint = Vector2.new(1, 0)
+	Msg.Position = UDim2.new(1.2, 0, 0.05, 0)
+	Msg.Size = UDim2.new(0, 240, 0, 50)
+	Msg.BackgroundColor3 = Color3.fromRGB(18,18,22)
+	Instance.new("UICorner", Msg).CornerRadius = UDim.new(0, 10)
+	local stroke = Instance.new("UIStroke", Msg)
+	stroke.Color = ActiveTheme.Color
+	stroke.Transparency = 0.4
 
-		local Txt = Instance.new("TextLabel", Msg)
-		Txt.Size = UDim2.new(1, -10, 1, 0)
-		Txt.Position = UDim2.new(0, 8, 0, 0)
-		Txt.BackgroundTransparency = 1
-		Txt.Font = Enum.Font.Gotham
-		Txt.TextColor3 = Color3.new(1, 1, 1)
-		Txt.TextSize = 13
-		Txt.TextXAlignment = Enum.TextXAlignment.Left
-		Txt.Text = text
+	local Txt = Instance.new("TextLabel", Msg)
+	Txt.Size = UDim2.new(1, -10, 0.6, 0)
+	Txt.Position = UDim2.new(0, 8, 0, 0)
+	Txt.BackgroundTransparency = 1
+	Txt.Font = Enum.Font.GothamBold
+	Txt.TextColor3 = Color3.new(1, 1, 1)
+	Txt.TextSize = 14
+	Txt.TextXAlignment = Enum.TextXAlignment.Left
+	Txt.Text = text
 
-		TweenService:Create(Msg, TweenInfo.new(0.35, Enum.EasingStyle.Quart), {
-			Position = UDim2.new(1, 0, 0.05, 0)
-		}):Play()
+	local Sub = Instance.new("TextLabel", Msg)
+	Sub.Size = UDim2.new(1, -10, 0.4, 0)
+	Sub.Position = UDim2.new(0, 8, 0.6, 0)
+	Sub.BackgroundTransparency = 1
+	Sub.Font = Enum.Font.Gotham
+	Sub.TextColor3 = Color3.fromRGB(200, 200, 200)
+	Sub.TextSize = 12
+	Sub.TextXAlignment = Enum.TextXAlignment.Left
+	Sub.Text = sub
 
-		task.delay(duration, function()
-			local tweenOut = TweenService:Create(Msg, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
-				Position = UDim2.new(1.2, 0, 0.05, 0),
-				BackgroundTransparency = 1
-			})
-			tweenOut:Play()
-			tweenOut.Completed:Wait()
-			Msg:Destroy()
-		end)
-	end
+	TweenService:Create(Msg, TweenInfo.new(0.35, Enum.EasingStyle.Quart), {
+		Position = UDim2.new(1, 0, 0.05, 0)
+	}):Play()
+
+	task.delay(duration, function()
+		local tweenOut = TweenService:Create(Msg, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+			Position = UDim2.new(1.2, 0, 0.05, 0),
+			BackgroundTransparency = 1
+		})
+		tweenOut:Play()
+		tweenOut.Completed:Wait()
+		Msg:Destroy()
+	end)
+end
 
 	--// tabs
 	function Window:CreateTab(args2)
