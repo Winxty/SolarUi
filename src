@@ -1,17 +1,20 @@
---// ☀️ Solar UI v0.7 — Enhanced & Polished
+--// ☀️ Solar UI v0.8 — Dynamic + Blur/Neon + layout fixes
 
 local SolarUI = {}
-SolarUI.Ver = "0.7.1"
+SolarUI.Ver = "0.8.0"
 
+--// Services
+local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local RS = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
 
--- Refined spacing constants
-local PADDING_LEFT = 12
-local PADDING_RIGHT = 12
-local CONTROL_HEIGHT = 40
-local SECTION_HEIGHT = 28
+--// Layout constants
+local PADDING_X = 14
+local CONTROL_HEIGHT = 38
+local CONTROL_GAP = 8
+local DESC_OFFSET_Y = -6 -- lift main label a bit when description exists
 
 SolarUI.Icons = {
 	Logo = "rbxassetid://131824998044042",
@@ -22,209 +25,360 @@ SolarUI.Icons = {
 	Checkmark = "rbxassetid://9754130783",
 }
 
--- Season detection
-local now = os.date("*t", os.time())
-local Season
-if (now.month == 4 and now.day <= 15) then
-	Season = "Easter"
-elseif (now.month == 10 and now.day >= 15) or (now.month == 11 and now.day <= 2) then
-	Season = "Halloween"
-elseif (now.month == 12 and now.day >= 10) or (now.month == 1 and now.day <= 5) then
-	Season = "Christmas"
-elseif (now.month == 12 and now.day <= 31) or (now.month == 1 and now.day >= 1) then
-	Season = "New Year"
-else
-	Season = "None"
+--// Season logic
+local function getSeason()
+	local now = os.date("*t", os.time())
+	if (now.month == 4 and now.day <= 15) then
+		return "Easter"
+	elseif (now.month == 10 and now.day >= 15) or (now.month == 11 and now.day <= 2) then
+		return "Halloween"
+	elseif (now.month == 12 and now.day >= 10) or (now.month == 1 and now.day <= 5) then
+		return "Christmas"
+	elseif (now.month == 12 and now.day <= 31) or (now.month == 1 and now.day >= 1) then
+		return "New Year"
+	else
+		return "None"
+	end
 end
 
--- Enhanced theme colors with better contrast
 local Themes = {
-	Halloween = { Color = Color3.fromRGB(255, 140, 60), Accent = Color3.fromRGB(255, 190, 130) },
-	Christmas = { Color = Color3.fromRGB(255, 100, 100), Accent = Color3.fromRGB(150, 255, 200) },
-	Easter    = { Color = Color3.fromRGB(255, 180, 220), Accent = Color3.fromRGB(230, 200, 255) },
-	["New Year"] = { Color = Color3.fromRGB(255, 200, 100), Accent = Color3.fromRGB(255, 230, 160) },
-	None      = { Color = Color3.fromRGB(255, 150, 50), Accent = Color3.fromRGB(255, 200, 120) },
+	Halloween   = { Color = Color3.fromRGB(255,130,50),  Accent = Color3.fromRGB(255,180,120) },
+	Christmas   = { Color = Color3.fromRGB(255,106,106), Accent = Color3.fromRGB(155,255,200) },
+	Easter      = { Color = Color3.fromRGB(255,200,230), Accent = Color3.fromRGB(240,210,255) },
+	["New Year"]= { Color = Color3.fromRGB(255,190,90),  Accent = Color3.fromRGB(255,220,150) },
+	None        = { Color = Color3.fromRGB(255,140,40),  Accent = Color3.fromRGB(255,190,100) },
 }
-local ActiveTheme = Themes[Season] or Themes.None
+local ActiveTheme = Themes[getSeason()] or Themes.None
 
+-- registry of parts that follow theme colors dynamically
+local AccentRegistry = {} -- { {inst=Instance, prop="ImageColor3"|"TextColor3"|..., kind="Color"|"Accent"|"Stroke"} }
+local function registerAccent(inst, prop, kind)
+	table.insert(AccentRegistry, {inst = inst, prop = prop, kind = kind})
+end
+
+local function tweenThemeTo(newTheme, t)
+	ActiveTheme = newTheme
+	for _, entry in ipairs(AccentRegistry) do
+		if entry.inst and entry.inst.Parent then
+			local target
+			if entry.kind == "Color" then
+				target = newTheme.Color
+			elseif entry.kind == "Accent" then
+				target = newTheme.Accent
+			elseif entry.kind == "Stroke" then
+				target = newTheme.Color
+			end
+			if target then
+				pcall(function()
+					TweenService:Create(entry.inst, TweenInfo.new(t or 0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+						[entry.prop] = target
+					}):Play()
+				end)
+			end
+		end
+	end
+end
+
+-- soft periodic season check (in case user keeps UI open across dates)
+task.spawn(function()
+	while true do
+		task.wait(60) -- check every 60s, super light
+		local s = getSeason()
+		local target = Themes[s] or Themes.None
+		if target.Color ~= ActiveTheme.Color or target.Accent ~= ActiveTheme.Accent then
+			tweenThemeTo(target, 0.35)
+		end
+	end
+end)
+
+--// Blur + neon helpers
+local function ensureBlur()
+	local blur = Lighting:FindFirstChild("SolarUI_Blur")
+	if not blur then
+		blur = Instance.new("BlurEffect")
+		blur.Name = "SolarUI_Blur"
+		blur.Size = 0
+		blur.Enabled = false
+		blur.Parent = Lighting
+	end
+	return blur
+end
+
+local function setBlurEnabled(enabled)
+	local blur = ensureBlur()
+	blur.Enabled = true
+	local goal = enabled and 8 or 0
+	local tween = TweenService:Create(blur, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {Size = goal})
+	tween:Play()
+	if not enabled then
+		tween.Completed:Once(function()
+			if blur.Size == 0 then blur.Enabled = false end
+		end)
+	end
+end
+
+local function addGlow(parent, color, transparency)
+	-- soft outer glow using an ImageLabel
+	local glow = Instance.new("ImageLabel")
+	glow.Name = "Solar_Glow"
+	glow.BackgroundTransparency = 1
+	glow.Image = "rbxassetid://5028857084" -- soft round glow sprite
+	glow.ScaleType = Enum.ScaleType.Slice
+	glow.SliceCenter = Rect.new(256,256,256,256)
+	glow.AnchorPoint = Vector2.new(0.5, 0.5)
+	glow.Position = UDim2.fromScale(0.5, 0.5)
+	glow.Size = UDim2.new(1, 26, 1, 26)
+	glow.ImageColor3 = color or ActiveTheme.Color
+	glow.ImageTransparency = transparency or 0.85
+	glow.ZIndex = 0
+	glow.Parent = parent
+	registerAccent(glow, "ImageColor3", "Color")
+	return glow
+end
+
+--// Utility
+local function corner(parent, r)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, r or 8)
+	c.Parent = parent
+	return c
+end
+
+local function stroke(parent, thickness, color, trans)
+	local s = Instance.new("UIStroke")
+	s.Thickness = thickness or 1
+	s.Color = color or ActiveTheme.Color
+	s.Transparency = trans or 0.35
+	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	s.Parent = parent
+	registerAccent(s, "Color", "Stroke")
+	return s
+end
+
+local function vlist(parent, pad)
+	local l = Instance.new("UIListLayout")
+	l.Padding = UDim.new(0, pad or CONTROL_GAP)
+	l.SortOrder = Enum.SortOrder.LayoutOrder
+	l.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	l.Parent = parent
+	return l
+end
+
+local function hlist(parent, pad)
+	local l = Instance.new("UIListLayout")
+	l.FillDirection = Enum.FillDirection.Horizontal
+	l.Padding = UDim.new(0, pad or 8)
+	l.SortOrder = Enum.SortOrder.LayoutOrder
+	l.VerticalAlignment = Enum.VerticalAlignment.Center
+	l.Parent = parent
+	return l
+end
+
+local function pad(parent, l, r, t, b)
+	local p = Instance.new("UIPadding")
+	p.PaddingLeft   = UDim.new(0, l or 0)
+	p.PaddingRight  = UDim.new(0, r or 0)
+	p.PaddingTop    = UDim.new(0, t or 0)
+	p.PaddingBottom = UDim.new(0, b or 0)
+	p.Parent = parent
+	return p
+end
+
+--// Window
 local togglebind
-
 function SolarUI:CreateWindow(args)
 	args = args or {}
-	local plr = game.Players.LocalPlayer
+	local plr = Players.LocalPlayer
 
-	local gui
-	if args.hui then
-		gui = gethui()
+	local rootGui
+	if args.hui and typeof(gethui) == "function" then
+		rootGui = gethui()
 	else
-		gui = Instance.new("ScreenGui")
-		gui.Parent = plr:WaitForChild("PlayerGui")
+		rootGui = Instance.new("ScreenGui")
+		rootGui.ResetOnSpawn = false
+		rootGui.IgnoreGuiInset = true
+		rootGui.Parent = plr:WaitForChild("PlayerGui")
 	end
+	rootGui.Name = "SolarUI"
 
-	gui.Name = "SolarUI"
-	gui.IgnoreGuiInset = true
-	gui.ResetOnSpawn = false
-
-	-- Main frame with improved sizing
-	local Main = Instance.new("Frame", gui)
+	-- Main container
+	local Main = Instance.new("Frame")
+	Main.Name = "Main"
 	Main.AnchorPoint = Vector2.new(0.5, 0.5)
 	Main.Position = UDim2.new(0.5, 0, 0.5, 0)
-	Main.Size = UDim2.new(0, 760, 0, 440)
-	Main.BackgroundColor3 = Color3.fromRGB(14, 14, 16)
+	Main.Size = UDim2.new(0, 760, 0, 420)
+	Main.BackgroundColor3 = Color3.fromRGB(12, 12, 14)
 	Main.Active = true
-	Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 12)
+	Main.Parent = rootGui
+	corner(Main, 14)
+	addGlow(Main, ActiveTheme.Color, 0.9)
 
-	-- Overlay with refined transparency
-	local Overlay = Instance.new("Frame", Main)
-	Overlay.Size = UDim2.new(1, 0, 1, 0)
+	-- overlay
+	local Overlay = Instance.new("Frame")
+	Overlay.Size = UDim2.fromScale(1, 1)
 	Overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-	Overlay.BackgroundTransparency = 0.35
-	Instance.new("UICorner", Overlay).CornerRadius = UDim.new(0, 12)
+	Overlay.BackgroundTransparency = 0.4
+	Overlay.Parent = Main
+	corner(Overlay, 14)
 
-	-- Top bar with better proportions
-	local TopBar = Instance.new("Frame", Overlay)
-	TopBar.Size = UDim2.new(1, 0, 0, 40)
-	TopBar.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
-	Instance.new("UICorner", TopBar).CornerRadius = UDim.new(0, 12)
+	-- TopBar
+	local TopBar = Instance.new("Frame")
+	TopBar.Name = "TopBar"
+	TopBar.Size = UDim2.new(1, 0, 0, 36)
+	TopBar.BackgroundColor3 = Color3.fromRGB(18,18,22)
+	TopBar.Parent = Overlay
+	corner(TopBar, 12)
+	stroke(TopBar, 1.2, ActiveTheme.Accent, 0.15)
 
-	local TopBarStroke = Instance.new("UIStroke", TopBar)
-	TopBarStroke.Color = ActiveTheme.Accent
-	TopBarStroke.Thickness = 1.5
-	TopBarStroke.Transparency = 0.3
-
-	-- Logo with smoother animation
-	local Logo = Instance.new("ImageButton", TopBar)
-	Logo.Image = SolarUI.Icons.Logo
-	Logo.AnchorPoint = Vector2.new(0, 0.5)
-	Logo.Position = UDim2.new(0, 14, 0.5, 0)
-	Logo.Size = UDim2.new(0, 26, 0, 26)
-	Logo.BackgroundColor3 = ActiveTheme.Accent
-	Logo.BackgroundTransparency = 0.2
-	Logo.AutoButtonColor = false
-	Instance.new("UICorner", Logo).CornerRadius = UDim.new(1, 0)
-
-	task.spawn(function()
-		while RS.Heartbeat:Wait() do
-			Logo.Rotation += 0.4
-		end
-	end)
-
-	-- Title with better positioning
-	local Title = Instance.new("TextLabel", TopBar)
-	Title.Text = args.Title or "Solar"
-	Title.Font = Enum.Font.GothamBold
-	Title.TextSize = 16
-	Title.TextColor3 = ActiveTheme.Accent
-	Title.BackgroundTransparency = 1
-	Title.AnchorPoint = Vector2.new(0, 0.5)
-	Title.Position = UDim2.new(0, 52, 0.5, 0)
-	Title.Size = UDim2.new(0.5, 0, 1, 0)
-	Title.TextXAlignment = Enum.TextXAlignment.Left
-
-	-- Subtitle with improved color
-	local Sub = Instance.new("TextLabel", TopBar)
-	Sub.Text = args.SubTitle or SolarUI.Ver
-	Sub.Font = Enum.Font.Gotham
-	Sub.TextSize = 12
-	Sub.TextColor3 = Color3.fromRGB(170, 170, 170)
-	Sub.BackgroundTransparency = 1
-	Sub.AnchorPoint = Vector2.new(1, 0.5)
-	Sub.Position = UDim2.new(0.98, 0, 0.5, 0)
-	Sub.Size = UDim2.new(0, 100, 1, 0)
-	Sub.TextXAlignment = Enum.TextXAlignment.Right
-
-	-- Optional clock
-	if args.Clock then
-		local Clock = Instance.new("TextLabel", TopBar)
-		Clock.BackgroundTransparency = 1
-		Clock.AnchorPoint = Vector2.new(1, 0.5)
-		Clock.Position = UDim2.new(0.85, 0, 0.5, 0)
-		Clock.Size = UDim2.new(0, 80, 1, 0)
-		Clock.Font = Enum.Font.GothamMedium
-		Clock.TextSize = 12
-		Clock.TextColor3 = Color3.fromRGB(255, 255, 255)
-		Clock.TextTransparency = 0.35
-		task.spawn(function()
-			while task.wait(1) do Clock.Text = os.date("%H:%M:%S") end
+	-- Dragging
+	do
+		local dragging, dragStart, startPos
+		TopBar.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				dragging = true
+				dragStart = input.Position
+				startPos = Main.Position
+				input.Changed:Connect(function()
+					if input.UserInputState == Enum.UserInputState.End then dragging = false end
+				end)
+			end
+		end)
+		UIS.InputChanged:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseMovement and dragging then
+				local delta = input.Position - dragStart
+				Main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+			end
 		end)
 	end
 
-	-- Dragging functionality
-	local dragging, dragStart, startPos
-	TopBar.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = true
-			dragStart = input.Position
-			startPos = Main.Position
-			input.Changed:Connect(function()
-				if input.UserInputState == Enum.UserInputState.End then dragging = false end
-			end)
+	-- Logo
+	local Logo = Instance.new("ImageButton")
+	Logo.Image = SolarUI.Icons.Logo
+	Logo.AnchorPoint = Vector2.new(0, 0.5)
+	Logo.Position = UDim2.new(0, 12, 0.5, 0)
+	Logo.Size = UDim2.new(0, 24, 0, 24)
+	Logo.BackgroundColor3 = ActiveTheme.Accent
+	Logo.AutoButtonColor = false
+	Logo.Parent = TopBar
+	corner(Logo, 100)
+	registerAccent(Logo, "BackgroundColor3", "Accent")
+
+	task.spawn(function()
+		while task.wait() do
+			Logo.Rotation = (Logo.Rotation + 0.5) % 360
 		end
 	end)
-	UIS.InputChanged:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseMovement and dragging then
-			local delta = input.Position - dragStart
-			Main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-		end
-	end)
-	
-	-- Toggle keybind
+
+	-- Title
+	local Title = Instance.new("TextLabel")
+	Title.Text = args.Title or "Solar"
+	Title.Font = Enum.Font.GothamBold
+	Title.TextSize = 15
+	Title.TextColor3 = ActiveTheme.Accent
+	Title.BackgroundTransparency = 1
+	Title.AnchorPoint = Vector2.new(0, 0.5)
+	Title.Position = UDim2.new(0, 48, 0.5, 0)
+	Title.Size = UDim2.new(0.6, 0, 1, 0)
+	Title.TextXAlignment = Enum.TextXAlignment.Left
+	Title.Parent = TopBar
+	registerAccent(Title, "TextColor3", "Accent")
+
+	-- Sub + Clock
+	local Sub = Instance.new("TextLabel")
+	Sub.Text = args.SubTitle or SolarUI.Ver
+	Sub.Font = Enum.Font.Gotham
+	Sub.TextSize = 12
+	Sub.TextColor3 = Color3.fromRGB(160,160,160)
+	Sub.BackgroundTransparency = 1
+	Sub.AnchorPoint = Vector2.new(1, 0)
+	Sub.Position = UDim2.new(0.98, 0, 0, 0)
+	Sub.Size = UDim2.new(0, 110, 1, 0)
+	Sub.TextXAlignment = Enum.TextXAlignment.Right
+	Sub.Parent = TopBar
+
+	if args.Clock then
+		local Clock = Instance.new("TextLabel")
+		Clock.BackgroundTransparency = 1
+		Clock.AnchorPoint = Vector2.new(1, 0)
+		Clock.Position = UDim2.new(0.85, 0, 0, 0)
+		Clock.Size = UDim2.new(0, 80, 1, 0)
+		Clock.Font = Enum.Font.Gotham
+		Clock.TextSize = 12
+		Clock.TextColor3 = Color3.fromRGB(255,255,255)
+		Clock.TextTransparency = 0.4
+		Clock.Text = os.date("%H:%M:%S")
+		Clock.Parent = TopBar
+		task.spawn(function()
+			while task.wait(1) do
+				if Clock.Parent then Clock.Text = os.date("%H:%M:%S") else break end
+			end
+		end)
+	end
+
+	-- Toggle visibility key
 	togglebind = args.ToggleKey
 	local cooldown = false
 	UIS.InputBegan:Connect(function(inp, gpe)
 		if gpe or cooldown then return end
 		if togglebind and inp.KeyCode == togglebind then
 			cooldown = true
-			Main.Visible = not Main.Visible
+			local newVis = not Main.Visible
+			Main.Visible = newVis
+			setBlurEnabled(newVis)
 			task.wait(0.25)
 			cooldown = false
 		end
 	end)
 
-	-- Sidebar with refined spacing
-	local Sidebar = Instance.new("Frame", Overlay)
-	Sidebar.Size = UDim2.new(0, 160, 1, -50)
-	Sidebar.Position = UDim2.new(0, 12, 0, 42)
-	Sidebar.BackgroundColor3 = Color3.fromRGB(12, 12, 15)
-	Instance.new("UICorner", Sidebar).CornerRadius = UDim.new(0, 10)
+	-- Sidebar
+	local Sidebar = Instance.new("Frame")
+	Sidebar.Size = UDim2.new(0, 150, 1, -45)
+	Sidebar.Position = UDim2.new(0, 15, 0, 38)
+	Sidebar.BackgroundColor3 = Color3.fromRGB(10, 10, 12)
+	Sidebar.Parent = Overlay
+	corner(Sidebar, 12)
+	addGlow(Sidebar, ActiveTheme.Color, 0.94)
 
-	local Tabs = Instance.new("ScrollingFrame", Sidebar)
-	Tabs.Size = UDim2.new(1, 0, 1, 0)
+	-- Tabs holder
+	local Tabs = Instance.new("ScrollingFrame")
+	Tabs.Size = UDim2.fromScale(1, 1)
 	Tabs.ScrollBarThickness = 0
 	Tabs.BackgroundTransparency = 1
-	local TabList = Instance.new("UIListLayout", Tabs)
-	TabList.Padding = UDim.new(0, 5)
+	Tabs.Parent = Sidebar
+	local TabList = vlist(Tabs, 6)
 	TabList.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	local TabPadding = Instance.new("UIPadding", Tabs)
-	TabPadding.PaddingTop = UDim.new(0, 8)
-	TabPadding.PaddingBottom = UDim.new(0, 8)
 
-	-- Divider with better visual
-	local Divider = Instance.new("Frame", Overlay)
-	Divider.Position = UDim2.new(0, 184, 0, 40)
-	Divider.Size = UDim2.new(0, 2, 1, -40)
+	-- Divider
+	local Divider = Instance.new("Frame")
+	Divider.Position = UDim2.new(0, 178, 0, 36)
+	Divider.Size = UDim2.new(0, 2, 1, -35)
 	Divider.BorderSizePixel = 0
 	Divider.BackgroundColor3 = ActiveTheme.Accent
-	Divider.BackgroundTransparency = 0.5
+	Divider.Parent = Overlay
+	registerAccent(Divider, "BackgroundColor3", "Accent")
 
-	-- Content area with improved spacing
-	local Content = Instance.new("Frame", Overlay)
-	Content.Position = UDim2.new(0, 198, 0, 50)
-	Content.Size = UDim2.new(1, -210, 1, -60)
+	-- Content
+	local Content = Instance.new("Frame")
+	Content.Position = UDim2.new(0, 190, 0, 45)
+	Content.Size = UDim2.new(1, -200, 1, -55)
 	Content.BackgroundTransparency = 1
-	local Pages = Instance.new("Folder", Content)
+	Content.Parent = Overlay
 
-	-- Notification holder
-	local MsgHolder = Instance.new("Frame", gui)
+	local Pages = Instance.new("Folder")
+	Pages.Parent = Content
+
+	-- Notifications holder
+	local MsgHolder = Instance.new("Frame")
 	MsgHolder.AnchorPoint = Vector2.new(1, 0)
 	MsgHolder.Position = UDim2.new(1, -20, 0, 20)
 	MsgHolder.Size = UDim2.new(0, 260, 1, -40)
 	MsgHolder.BackgroundTransparency = 1
-	local MsgLayout = Instance.new("UIListLayout", MsgHolder)
-	MsgLayout.Padding = UDim.new(0, 8)
+	MsgHolder.Parent = rootGui
+	local MsgLayout = vlist(MsgHolder, 6)
 	MsgLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
 	MsgLayout.VerticalAlignment = Enum.VerticalAlignment.Top
 
+	-- Public window API
 	local Window = {}
 	Window.Tabs = {}
 
@@ -234,66 +388,62 @@ function SolarUI:CreateWindow(args)
 			warn("Tab '" .. tabName .. "' not found!")
 			return false
 		end
-
 		for _, t in pairs(self.Tabs) do
 			t.Page.Visible = false
-			TweenService:Create(t.Icon, TweenInfo.new(0.15), { ImageColor3 = Color3.fromRGB(140, 140, 140) }):Play()
-			TweenService:Create(t.Text, TweenInfo.new(0.15), { TextColor3 = Color3.fromRGB(150, 150, 150) }):Play()
+			TweenService:Create(t.Icon, TweenInfo.new(0.12), { ImageColor3 = Color3.fromRGB(150,150,150) }):Play()
+			TweenService:Create(t.Text, TweenInfo.new(0.12), { TextColor3 = Color3.fromRGB(160,160,160) }):Play()
 		end
-
 		tab.Page.Visible = true
-		TweenService:Create(tab.Icon, TweenInfo.new(0.15), { ImageColor3 = ActiveTheme.Color }):Play()
-		TweenService:Create(tab.Text, TweenInfo.new(0.15), { TextColor3 = Color3.fromRGB(255, 255, 255) }):Play()
-
+		TweenService:Create(tab.Icon, TweenInfo.new(0.12), { ImageColor3 = ActiveTheme.Color }):Play()
+		TweenService:Create(tab.Text, TweenInfo.new(0.12), { TextColor3 = Color3.fromRGB(255,255,255) }):Play()
 		return true
 	end
 
-	function Window:Notify(args)
-		args = args or {}
-		local text = args.Text or "Notification"
-		local sub = args.SubText or ""
-		local duration = args.Time or 3
+	function Window:Notify(argsN)
+		argsN = argsN or {}
+		local text = argsN.Text or "Notification"
+		local sub = argsN.SubText or ""
+		local duration = argsN.Time or 3
 
-		local Msg = Instance.new("Frame", MsgHolder)
+		local Msg = Instance.new("Frame")
 		Msg.AnchorPoint = Vector2.new(1, 0)
-		Msg.Position = UDim2.new(1.2, 0, 0, 0)
-		Msg.Size = UDim2.new(0, 250, 0, 60)
-		Msg.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
-		Instance.new("UICorner", Msg).CornerRadius = UDim.new(0, 10)
-		local stroke = Instance.new("UIStroke", Msg)
-		stroke.Color = ActiveTheme.Color
-		stroke.Transparency = 0.3
-		stroke.Thickness = 1.5
+		Msg.Position = UDim2.new(1.2, 0, 0.02, 0)
+		Msg.Size = UDim2.new(0, 250, 0, 54)
+		Msg.BackgroundColor3 = Color3.fromRGB(18,18,22)
+		Msg.Parent = MsgHolder
+		corner(Msg, 10)
+		stroke(Msg, 1, ActiveTheme.Color, 0.35)
+		addGlow(Msg, ActiveTheme.Color, 0.92)
 
-		local Txt = Instance.new("TextLabel", Msg)
-		Txt.Size = UDim2.new(1, -20, 0.55, 0)
-		Txt.Position = UDim2.new(0, 10, 0, 5)
+		local Txt = Instance.new("TextLabel")
+		Txt.Size = UDim2.new(1, -10, 0.58, 0)
+		Txt.Position = UDim2.new(0, 8, 0, 2)
 		Txt.BackgroundTransparency = 1
 		Txt.Font = Enum.Font.GothamBold
 		Txt.TextColor3 = Color3.new(1, 1, 1)
 		Txt.TextSize = 14
 		Txt.TextXAlignment = Enum.TextXAlignment.Left
-		Txt.TextYAlignment = Enum.TextYAlignment.Top
 		Txt.Text = text
+		Txt.Parent = Msg
 
-		local Sub = Instance.new("TextLabel", Msg)
-		Sub.Size = UDim2.new(1, -20, 0.45, 0)
-		Sub.Position = UDim2.new(0, 10, 0.55, 0)
-		Sub.BackgroundTransparency = 1
-		Sub.Font = Enum.Font.Gotham
-		Sub.TextColor3 = Color3.fromRGB(200, 200, 200)
-		Sub.TextSize = 12
-		Sub.TextXAlignment = Enum.TextXAlignment.Left
-		Sub.TextYAlignment = Enum.TextYAlignment.Top
-		Sub.Text = sub
+		local SubTxt = Instance.new("TextLabel")
+		SubTxt.Size = UDim2.new(1, -10, 0.42, 0)
+		SubTxt.Position = UDim2.new(0, 8, 0.58, -2)
+		SubTxt.BackgroundTransparency = 1
+		SubTxt.Font = Enum.Font.Gotham
+		SubTxt.TextColor3 = Color3.fromRGB(200, 200, 200)
+		SubTxt.TextSize = 12
+		SubTxt.TextXAlignment = Enum.TextXAlignment.Left
+		SubTxt.Text = sub
+		SubTxt.Parent = Msg
 
 		TweenService:Create(Msg, TweenInfo.new(0.35, Enum.EasingStyle.Quart), {
-			Position = UDim2.new(1, 0, 0, 0)
+			Position = UDim2.new(1, 0, 0.02, 0)
 		}):Play()
 
 		task.delay(duration, function()
 			local tweenOut = TweenService:Create(Msg, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
-				Position = UDim2.new(1.2, 0, 0, 0),
+				Position = UDim2.new(1.2, 0, 0.02, 0),
 				BackgroundTransparency = 1
 			})
 			tweenOut:Play()
@@ -302,160 +452,326 @@ function SolarUI:CreateWindow(args)
 		end)
 	end
 
-	-- Tab creation
+	-- internal: uniform control holder
+	local function createHolder(parent, baseHeight, hasDesc)
+		local height = baseHeight + (hasDesc and 18 or 0)
+		local Holder = Instance.new("Frame")
+		Holder.Size = UDim2.new(0.94, 0, 0, height)
+		Holder.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
+		Holder.Parent = parent
+		corner(Holder, 8)
+		pad(Holder, PADDING_X, PADDING_X, 8, 8)
+		stroke(Holder, 1, ActiveTheme.Color, 0.25)
+		addGlow(Holder, ActiveTheme.Color, 0.96)
+		return Holder
+	end
+
+	--// Tab builder
 	function Window:CreateTab(args2)
 		args2 = args2 or {}
-		local page = Instance.new("ScrollingFrame", Pages)
+		local page = Instance.new("ScrollingFrame")
 		page.Visible = false
 		page.BackgroundTransparency = 1
 		page.Size = UDim2.new(1, 0, 1, 0)
 		page.AutomaticCanvasSize = Enum.AutomaticSize.Y
 		page.CanvasSize = UDim2.new(0, 0, 0, 0)
-		page.ScrollBarThickness = 3
+		page.ScrollBarThickness = 2
 		page.ScrollBarImageColor3 = ActiveTheme.Color
-		page.ScrollBarImageTransparency = 0.4
 		page.ScrollingEnabled = true
 		page.ScrollingDirection = Enum.ScrollingDirection.Y
 		page.ElasticBehavior = Enum.ElasticBehavior.Never
-		local layout = Instance.new("UIListLayout", page)
-		layout.Padding = UDim.new(0, 10)
-		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-		layout.SortOrder = Enum.SortOrder.LayoutOrder
-		Instance.new("UIPadding", page).PaddingTop = UDim.new(0, 10)
+		page.Parent = Pages
+		registerAccent(page, "ScrollBarImageColor3", "Color")
 
-		local btn = Instance.new("TextButton", Tabs)
-		btn.Size = UDim2.new(0.92, 0, 0, 36)
+		vlist(page, CONTROL_GAP)
+		pad(page, 0, 0, 8, 10)
+
+		-- left sidebar button
+		local btn = Instance.new("TextButton")
+		btn.Size = UDim2.new(0.95, 0, 0, 34)
 		btn.Font = Enum.Font.Gotham
 		btn.Text = ""
 		btn.BackgroundTransparency = 1
 		btn.AutoButtonColor = false
-		
-		local holder = Instance.new("Frame", btn)
+		btn.Parent = Tabs
+
+		local holder = Instance.new("Frame")
 		holder.BackgroundTransparency = 1
 		holder.Size = UDim2.new(1, 0, 1, 0)
-		local hLayout = Instance.new("UIListLayout", holder)
-		hLayout.FillDirection = Enum.FillDirection.Horizontal
-		hLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-		hLayout.Padding = UDim.new(0, 10)
-		local holderPad = Instance.new("UIPadding", holder)
-		holderPad.PaddingLeft = UDim.new(0, 10)
+		holder.Parent = btn
+		hlist(holder, 8)
 
-		local icon = Instance.new("ImageLabel", holder)
+		local icon = Instance.new("ImageLabel")
 		icon.Image = args2.Icon or SolarUI.Icons.Home
-		icon.Size = UDim2.new(0, 20, 0, 20)
+		icon.Size = UDim2.new(0, 18, 0, 18)
 		icon.BackgroundTransparency = 1
-		icon.ImageColor3 = Color3.fromRGB(160, 160, 160)
+		icon.ImageColor3 = Color3.fromRGB(180, 180, 180)
+		icon.Parent = holder
 
-		local txt = Instance.new("TextLabel", holder)
+		local txt = Instance.new("TextLabel")
 		txt.Text = args2.Title or "Tab"
-		txt.Font = Enum.Font.GothamMedium
-		txt.TextSize = 14
-		txt.TextColor3 = Color3.fromRGB(160, 160, 160)
+		txt.Font = Enum.Font.Gotham
+		txt.TextSize = 13
+		txt.TextColor3 = Color3.fromRGB(180, 180, 180)
 		txt.BackgroundTransparency = 1
 		txt.AutomaticSize = Enum.AutomaticSize.X
 		txt.TextXAlignment = Enum.TextXAlignment.Left
+		txt.Parent = holder
 
 		btn.MouseButton1Click:Connect(function()
 			for _, tab in pairs(Window.Tabs) do
 				tab.Page.Visible = false
-				TweenService:Create(tab.Icon, TweenInfo.new(0.15), { ImageColor3 = Color3.fromRGB(140, 140, 140) }):Play()
-				TweenService:Create(tab.Text, TweenInfo.new(0.15), { TextColor3 = Color3.fromRGB(150, 150, 150) }):Play()
+				TweenService:Create(tab.Icon, TweenInfo.new(0.12), { ImageColor3 = Color3.fromRGB(150,150,150) }):Play()
+				TweenService:Create(tab.Text, TweenInfo.new(0.12), { TextColor3 = Color3.fromRGB(160,160,160) }):Play()
 			end
 			page.Visible = true
-			TweenService:Create(icon, TweenInfo.new(0.15), { ImageColor3 = ActiveTheme.Color }):Play()
-			TweenService:Create(txt, TweenInfo.new(0.15), { TextColor3 = Color3.fromRGB(255, 255, 255) }):Play()
+			TweenService:Create(icon, TweenInfo.new(0.12), { ImageColor3 = ActiveTheme.Color }):Play()
+			TweenService:Create(txt, TweenInfo.new(0.12), { TextColor3 = Color3.fromRGB(255,255,255) }):Play()
 		end)
 
 		local Tab = {}
 		Tab.Page, Tab.Button, Tab.Icon, Tab.Text = page, btn, icon, txt
 
 		function Tab:AddSection(title)
-			local section = Instance.new("Frame", self.Page)
-			section.Size = UDim2.new(0.92, 0, 0, SECTION_HEIGHT)
+			local section = Instance.new("Frame")
+			section.Size = UDim2.new(0.94, 0, 0, 28)
 			section.BackgroundTransparency = 1
+			section.Parent = self.Page
+			pad(section, PADDING_X, 0, 0, 0)
 
-			local pad = Instance.new("UIPadding", section)
-			pad.PaddingLeft = UDim.new(0, PADDING_LEFT)
-
-			local label = Instance.new("TextLabel", section)
+			local label = Instance.new("TextLabel")
 			label.Text = title or "Section"
 			label.Font = Enum.Font.GothamBold
-			label.TextSize = 17
-			label.TextColor3 = Color3.fromRGB(255, 255, 255)
+			label.TextSize = 18
+			label.TextColor3 = Color3.fromRGB(255,255,255)
 			label.TextXAlignment = Enum.TextXAlignment.Left
 			label.BackgroundTransparency = 1
-			label.Size = UDim2.new(1, 0, 1, -6)
+			label.Size = UDim2.new(1, 0, 1, -4)
 			label.Position = UDim2.new(0, 0, 0, 0)
+			label.Parent = section
 
-			local line = Instance.new("Frame", section)
+			local line = Instance.new("Frame")
 			line.AnchorPoint = Vector2.new(0, 1)
 			line.Position = UDim2.new(0, 0, 1, 0)
-			line.Size = UDim2.new(1, -PADDING_LEFT, 0, 2)
+			line.Size = UDim2.new(1, -PADDING_X, 0, 1)
 			line.BackgroundColor3 = ActiveTheme.Color
-			line.BackgroundTransparency = 0.5
+			line.BackgroundTransparency = 0.6
+			line.Parent = section
+			registerAccent(line, "BackgroundColor3", "Color")
 		end
 
-		local function createHolder(parent, height)
-			local Holder = Instance.new("Frame", parent)
-			Holder.Size = UDim2.new(0.92, 0, 0, height or CONTROL_HEIGHT)
-			Holder.BackgroundColor3 = Color3.fromRGB(18, 18, 23)
-			Instance.new("UICorner", Holder).CornerRadius = UDim.new(0, 8)
-			local hp = Instance.new("UIPadding", Holder)
-			hp.PaddingLeft = UDim.new(0, PADDING_LEFT)
-			hp.PaddingRight = UDim.new(0, PADDING_RIGHT)
-			return Holder
+		-- helpers
+		local function addLabelAndDesc(holder, text, desc)
+			local Label = Instance.new("TextLabel")
+			Label.Size = UDim2.new(1, -140, 0, 18)
+			Label.Position = UDim2.new(0, 0, 0, desc and DESC_OFFSET_Y or 0)
+			Label.Text = text
+			Label.TextColor3 = Color3.new(1,1,1)
+			Label.TextXAlignment = Enum.TextXAlignment.Left
+			Label.Font = Enum.Font.Gotham
+			Label.TextSize = 14
+			Label.BackgroundTransparency = 1
+			Label.Parent = holder
+
+			if desc then
+				local Desc = Instance.new("TextLabel")
+				Desc.BackgroundTransparency = 1
+				Desc.Position = UDim2.new(0, 0, 0, 18 + DESC_OFFSET_Y)
+				Desc.Size = UDim2.new(1, -10, 0, 14)
+				Desc.Text = desc
+				Desc.TextColor3 = Color3.fromRGB(160, 160, 160)
+				Desc.TextSize = 12
+				Desc.Font = Enum.Font.Gotham
+				Desc.TextXAlignment = Enum.TextXAlignment.Left
+				Desc.Parent = holder
+			end
 		end
 
 		function Tab:AddToggle(args)
 			args = args or {}
-			local extraHeight = args.Description and 22 or 0
-			local Holder = createHolder(self.Page, CONTROL_HEIGHT + extraHeight)
+			local Holder = createHolder(self.Page, CONTROL_HEIGHT, args.Description ~= nil)
+			addLabelAndDesc(Holder, args.Text or "Toggle", args.Description)
 
-			local Label = Instance.new("TextLabel", Holder)
-			Label.Size = UDim2.new(1, -45, 1, extraHeight > 0 and -extraHeight or 0)
-			Label.Position = UDim2.new(0, 0, 0, 0)
-			Label.Text = args.Text or "Toggle"
-			Label.TextColor3 = Color3.new(1, 1, 1)
-			Label.TextXAlignment = Enum.TextXAlignment.Left
-			Label.TextYAlignment = Enum.TextYAlignment.Center
-			Label.Font = Enum.Font.GothamMedium
-			Label.TextSize = 14
-			Label.BackgroundTransparency = 1
-
-			local Btn = Instance.new("ImageButton", Holder)
-			Btn.AnchorPoint = Vector2.new(1, 0)
-			Btn.Position = UDim2.new(1, 0, 0, (CONTROL_HEIGHT - 32) / 2)
-			Btn.Size = UDim2.new(0, 32, 0, 32)
-			Btn.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+			local Btn = Instance.new("ImageButton")
+			Btn.AnchorPoint = Vector2.new(1, 0.5)
+			Btn.Position = UDim2.new(1, 0, 0, args.Description and 19 or Holder.AbsoluteSize.Y/2) -- gets corrected after render
+			Btn.Size = UDim2.new(0, 30, 0, 30)
+			Btn.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
 			Btn.Image = SolarUI.Icons.Checkmark
 			Btn.ImageTransparency = 1
-			Instance.new("UICorner", Btn).CornerRadius = UDim.new(0, 6)
-			local stroke = Instance.new("UIStroke", Btn)
-			stroke.Color = ActiveTheme.Color
-			stroke.Transparency = 0.4
+			Btn.AutoButtonColor = false
+			Btn.Parent = Holder
+			corner(Btn, 6)
+			stroke(Btn, 1, ActiveTheme.Color, 0.35)
+
+			local state = (args.Default == true)
+			local function animate(active)
+				TweenService:Create(Btn, TweenInfo.new(0.18), {
+					ImageTransparency = active and 0.15 or 1,
+					BackgroundColor3 = active and Color3.fromRGB(18,18,24) or Color3.fromRGB(12,12,16)
+				}):Play()
+			end
+
+			local Toggle = {}
+			function Toggle:SetState(x)
+				state = x and true or false
+				animate(state)
+				if args.Callback then
+					task.spawn(args.Callback, state)
+				end
+			end
+			function Toggle:GetState() return state end
+
+			Btn.MouseButton1Click:Connect(function()
+				Toggle:SetState(not state)
+			end)
+
+			-- fix vertical center after first frame
+			task.defer(function()
+				local yCenter = Holder.AbsoluteSize.Y/2
+				Btn.Position = UDim2.new(1, 0, 0, yCenter)
+			end)
+
+			Toggle:SetState(state)
+			return Toggle
+		end
+
+		function Tab:AddButton(args)
+			args = args or {}
+			local Holder = createHolder(self.Page, CONTROL_HEIGHT, args.Description ~= nil)
+			addLabelAndDesc(Holder, args.Text or "Button", args.Description)
+
+			local Button = Instance.new("TextButton")
+			Button.AnchorPoint = Vector2.new(1, 0.5)
+			Button.Position = UDim2.new(1, 0, 0, Holder.AbsoluteSize.Y/2)
+			Button.Size = UDim2.new(0, 110, 0, 28)
+			Button.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+			Button.TextColor3 = ActiveTheme.Color
+			Button.Font = Enum.Font.GothamBold
+			Button.TextSize = 13
+			Button.Text = "Run"
+			Button.AutoButtonColor = false
+			Button.Parent = Holder
+			corner(Button, 6)
+			stroke(Button, 1, ActiveTheme.Color, 0.35)
+			registerAccent(Button, "TextColor3", "Color")
+
+			Button.MouseEnter:Connect(function()
+				TweenService:Create(Button, TweenInfo.new(0.15), { TextColor3 = ActiveTheme.Accent }):Play()
+			end)
+			Button.MouseLeave:Connect(function()
+				TweenService:Create(Button, TweenInfo.new(0.15), { TextColor3 = ActiveTheme.Color }):Play()
+			end)
+			Button.MouseButton1Click:Connect(function()
+				if args.Callback then args.Callback() end
+			end)
+
+			task.defer(function()
+				Button.Position = UDim2.new(1, 0, 0, Holder.AbsoluteSize.Y/2)
+			end)
+
+			return { SetText = function(_, t) Button.Text = t end }
+		end
+
+		function Tab:AddSlider(args)
+			args = args or {}
+			local min = args.Min or 0
+			local max = args.Max or 100
+			local default = args.Default or min
+			local callback = args.Callback or function() end
+
+			local Holder = createHolder(self.Page, 56, args.Description ~= nil)
+
+			-- Row
+			local Row = Instance.new("Frame")
+			Row.BackgroundTransparency = 1
+			Row.Position = UDim2.new(0, 0, 0, 2 + (args.Description and DESC_OFFSET_Y or 0))
+			Row.Size = UDim2.new(1, 0, 0, 20)
+			Row.Parent = Holder
+
+			local Title = Instance.new("TextLabel")
+			Title.BackgroundTransparency = 1
+			Title.Position = UDim2.new(0, 0, 0, 0)
+			Title.Size = UDim2.new(1, -60, 1, 0)
+			Title.Font = Enum.Font.Gotham
+			Title.TextSize = 13
+			Title.TextColor3 = Color3.new(1,1,1)
+			Title.TextXAlignment = Enum.TextXAlignment.Left
+			Title.Text = args.Text or "Slider"
+			Title.Parent = Row
+
+			local ValueLabel = Instance.new("TextLabel")
+			ValueLabel.BackgroundTransparency = 1
+			ValueLabel.AnchorPoint = Vector2.new(1, 0)
+			ValueLabel.Position = UDim2.new(1, 0, 0, 0)
+			ValueLabel.Size = UDim2.new(0, 50, 1, 0)
+			ValueLabel.Font = Enum.Font.Gotham
+			ValueLabel.TextSize = 13
+			ValueLabel.TextColor3 = ActiveTheme.Color
+			ValueLabel.TextXAlignment = Enum.TextXAlignment.Right
+			ValueLabel.Parent = Row
+			registerAccent(ValueLabel, "TextColor3", "Color")
+
+			-- Bar
+			local Bar = Instance.new("Frame")
+			Bar.AnchorPoint = Vector2.new(0.5, 0)
+			Bar.Position = UDim2.new(0.5, 0, 0, 30)
+			Bar.Size = UDim2.new(1, 0, 0, 6)
+			Bar.BackgroundColor3 = Color3.fromRGB(12,12,16)
+			Bar.Parent = Holder
+			corner(Bar, 4)
+
+			local Fill = Instance.new("Frame")
+			Fill.Size = UDim2.new(0, 0, 1, 0)
+			Fill.BackgroundColor3 = ActiveTheme.Color
+			Fill.Parent = Bar
+			corner(Fill, 4)
+			registerAccent(Fill, "BackgroundColor3", "Color")
+			addGlow(Fill, ActiveTheme.Color, 0.9)
+
+			local DragBtn = Instance.new("ImageButton")
+			DragBtn.AnchorPoint = Vector2.new(0.5, 0.5)
+			DragBtn.Position = UDim2.fromScale(1, 0.5)
+			DragBtn.Size = UDim2.new(0, 12, 0, 12)
+			DragBtn.BackgroundColor3 = ActiveTheme.Color
+			DragBtn.AutoButtonColor = false
+			DragBtn.Parent = Fill
+			corner(DragBtn, 100)
+			registerAccent(DragBtn, "BackgroundColor3", "Color")
 
 			if args.Description then
-				local Desc = Instance.new("TextLabel", Holder)
+				local Desc = Instance.new("TextLabel")
 				Desc.BackgroundTransparency = 1
-				Desc.Position = UDim2.new(0, 0, 0, 46)
-				Desc.Size = UDim2.new(1, -10, 0, 16)
+				Desc.Position = UDim2.new(0, 0, 1, -18)
+				Desc.Size = UDim2.new(1, -10, 0, 14)
 				Desc.Text = args.Description
-				Desc.TextColor3 = Color3.fromRGB(150, 150, 150)
-				Desc.TextSize = 11
+				Desc.TextColor3 = Color3.fromRGB(160, 160, 160)
+				Desc.TextSize = 12
 				Desc.Font = Enum.Font.Gotham
 				Desc.TextXAlignment = Enum.TextXAlignment.Left
-				Desc.TextYAlignment = Enum.TextYAlignment.Top
+				Desc.Parent = Holder
 			end
 
 			local Slider = { Value = default }
 
-			local function setValueFromX(x, fireCb)
-				local percent = math.clamp((x - Bar.AbsolutePosition.X) / Bar.AbsoluteSize.X, 0, 1)
-				local value = math.floor(min + (max - min) * percent)
+			local function setPercent(p, fireCb)
+				p = math.clamp(p, 0, 1)
+				local value = min + (max - min) * p
+				-- keep ints if both min/max are whole numbers else keep 2 decimals
+				if math.floor(min) == min and math.floor(max) == max then
+					value = math.floor(value + 0.5)
+				else
+					value = math.floor(value * 100 + 0.5) / 100
+				end
 				Slider.Value = value
 				ValueLabel.Text = tostring(value)
-				TweenService:Create(Fill, TweenInfo.new(0.1), { Size = UDim2.new(percent, 0, 1, 0) }):Play()
+				TweenService:Create(Fill, TweenInfo.new(0.1), { Size = UDim2.new(p, 0, 1, 0) }):Play()
 				if fireCb then callback(value) end
+			end
+
+			local function setFromX(x, fireCb)
+				local percent = (x - Bar.AbsolutePosition.X) / Bar.AbsoluteSize.X
+				setPercent(percent, fireCb)
 			end
 
 			local dragging = false
@@ -467,23 +783,20 @@ function SolarUI:CreateWindow(args)
 			end)
 			UIS.InputChanged:Connect(function(input)
 				if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-					setValueFromX(input.Position.X, true)
+					setFromX(input.Position.X, true)
 				end
 			end)
 
 			function Slider:SetValue(v)
 				local c = math.clamp(v, min, max)
-				local x = Bar.AbsolutePosition.X + (c - min) / (max - min) * Bar.AbsoluteSize.X
-				setValueFromX(x, false)
+				local p = (c - min) / (max - min)
+				setPercent(p, false)
 			end
-
-			function Slider:GetValue()
-				return Slider.Value
-			end
+			function Slider:GetValue() return self.Value end
 
 			task.defer(function()
-				local x = Bar.AbsolutePosition.X + (default - min) / (max - min) * Bar.AbsoluteSize.X
-				setValueFromX(x, false)
+				local p = (default - min) / (max - min)
+				setPercent(p, false)
 			end)
 
 			return Slider
@@ -495,73 +808,64 @@ function SolarUI:CreateWindow(args)
 			local default = args.Default or options[1]
 			local callback = args.Callback or function() end
 			local multi = args.Multi or false
-			local extraHeight = args.Description and 22 or 0
 
-			local Holder = createHolder(self.Page, CONTROL_HEIGHT + extraHeight)
+			local Holder = createHolder(self.Page, CONTROL_HEIGHT, args.Description ~= nil)
 
-			local Label = Instance.new("TextLabel", Holder)
-			Label.Size = UDim2.new(1, -130, 0, 18)
-			Label.Position = UDim2.new(0, 0, 0, extraHeight > 0 and 4 or 11)
+			local Label = Instance.new("TextLabel")
+			Label.Size = UDim2.new(1, -140, 0, 18)
+			Label.Position = UDim2.new(0, 0, 0, args.Description and DESC_OFFSET_Y or 0)
 			Label.BackgroundTransparency = 1
-			Label.Font = Enum.Font.GothamMedium
+			Label.Font = Enum.Font.Gotham
 			Label.TextSize = 14
 			Label.TextColor3 = Color3.fromRGB(255, 255, 255)
 			Label.TextXAlignment = Enum.TextXAlignment.Left
-			Label.TextYAlignment = Enum.TextYAlignment.Top
 			Label.Text = args.Text or "Dropdown"
+			Label.Parent = Holder
 
 			if args.Description then
-				local Desc = Instance.new("TextLabel", Holder)
+				local Desc = Instance.new("TextLabel")
 				Desc.BackgroundTransparency = 1
-				Desc.Position = UDim2.new(0, 0, 0, 24)
-				Desc.Size = UDim2.new(1, -130, 0, 16)
+				Desc.Position = UDim2.new(0, 0, 0, 18 + DESC_OFFSET_Y)
+				Desc.Size = UDim2.new(1, -10, 0, 14)
 				Desc.Font = Enum.Font.Gotham
-				Desc.TextSize = 11
-				Desc.TextColor3 = Color3.fromRGB(150, 150, 150)
+				Desc.TextSize = 12
+				Desc.TextColor3 = Color3.fromRGB(160, 160, 160)
 				Desc.TextXAlignment = Enum.TextXAlignment.Left
-				Desc.TextYAlignment = Enum.TextYAlignment.Top
 				Desc.Text = args.Description
+				Desc.Parent = Holder
 			end
 
-			local MainBtn = Instance.new("TextButton", Holder)
-			MainBtn.AnchorPoint = Vector2.new(1, 0)
-			MainBtn.Position = UDim2.new(1, 0, 0, extraHeight > 0 and 4 or (CONTROL_HEIGHT - 30) / 2)
-			MainBtn.Size = UDim2.new(0, 120, 0, 30)
-			MainBtn.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+			local MainBtn = Instance.new("TextButton")
+			MainBtn.AnchorPoint = Vector2.new(1, 0.5)
+			MainBtn.Position = UDim2.new(1, 0, 0, Holder.AbsoluteSize.Y/2)
+			MainBtn.Size = UDim2.new(0, 120, 0, 28)
+			MainBtn.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
 			MainBtn.TextColor3 = ActiveTheme.Color
 			MainBtn.Font = Enum.Font.GothamBold
 			MainBtn.TextSize = 13
-			MainBtn.Text = multi and "Select..." or default
+			MainBtn.Text = multi and "Select..." or (default or "Select...")
 			MainBtn.AutoButtonColor = false
-			Instance.new("UICorner", MainBtn).CornerRadius = UDim.new(0, 6)
-			local mainStroke = Instance.new("UIStroke", MainBtn)
-			mainStroke.Color = ActiveTheme.Color
-			mainStroke.Transparency = 0.5
+			MainBtn.Parent = Holder
+			corner(MainBtn, 6)
+			stroke(MainBtn, 1, ActiveTheme.Color, 0.35)
+			registerAccent(MainBtn, "TextColor3", "Color")
 
-			local DropFrame = Instance.new("ScrollingFrame", Holder)
+			local DropFrame = Instance.new("ScrollingFrame")
 			DropFrame.AnchorPoint = Vector2.new(1, 0)
 			DropFrame.Position = UDim2.new(1, 0, 1, 6)
 			DropFrame.Size = UDim2.new(0, 120, 0, 0)
-			DropFrame.BackgroundColor3 = Color3.fromRGB(16, 16, 21)
+			DropFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
 			DropFrame.BorderSizePixel = 0
 			DropFrame.Visible = false
 			DropFrame.ScrollBarThickness = 2
-			DropFrame.ScrollBarImageColor3 = ActiveTheme.Color
-			DropFrame.ScrollBarImageTransparency = 0.5
+			DropFrame.ScrollBarImageColor3 = Color3.fromRGB(80, 60, 25)
 			DropFrame.ZIndex = 100
 			DropFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-			Instance.new("UICorner", DropFrame).CornerRadius = UDim.new(0, 6)
-			local dropStroke = Instance.new("UIStroke", DropFrame)
-			dropStroke.Color = ActiveTheme.Color
-			dropStroke.Transparency = 0.4
+			DropFrame.Parent = Holder
+			corner(DropFrame, 6)
 
-			local list = Instance.new("UIListLayout", DropFrame)
-			list.Padding = UDim.new(0, 4)
+			local list = vlist(DropFrame, 4)
 			list.HorizontalAlignment = Enum.HorizontalAlignment.Center
-			list.SortOrder = Enum.SortOrder.LayoutOrder
-			local dropPad = Instance.new("UIPadding", DropFrame)
-			dropPad.PaddingTop = UDim.new(0, 4)
-			dropPad.PaddingBottom = UDim.new(0, 4)
 
 			local open = false
 			local selected = multi and {} or default
@@ -570,28 +874,28 @@ function SolarUI:CreateWindow(args)
 				open = not open
 				DropFrame.Visible = true
 
-				local goalSize = open and UDim2.new(0, 120, 0, math.min(#options * 30 + 12, 150)) or UDim2.new(0, 120, 0, 0)
-				TweenService:Create(DropFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+				local goalSize = open and UDim2.new(0, 120, 0, math.min(#options * 28 + 10, 140)) or UDim2.new(0, 120, 0, 0)
+				TweenService:Create(DropFrame, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
 					Size = goalSize
 				}):Play()
 
 				for _, opt in pairs(DropFrame:GetChildren()) do
 					if opt:IsA("TextButton") then
-						TweenService:Create(opt, TweenInfo.new(0.2), { TextTransparency = open and 0 or 1 }):Play()
+						TweenService:Create(opt, TweenInfo.new(0.18), { TextTransparency = open and 0 or 1 }):Play()
 					end
 				end
 
 				if not open then
-					task.delay(0.25, function()
+					task.delay(0.22, function()
 						DropFrame.Visible = false
 					end)
 				end
 			end)
 
 			for _, v in ipairs(options) do
-				local Option = Instance.new("TextButton", DropFrame)
-				Option.Size = UDim2.new(0.9, 0, 0, 28)
-				Option.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+				local Option = Instance.new("TextButton")
+				Option.Size = UDim2.new(0.9, 0, 0, 26)
+				Option.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
 				Option.Text = v
 				Option.TextColor3 = Color3.fromRGB(255, 255, 255)
 				Option.Font = Enum.Font.Gotham
@@ -599,22 +903,19 @@ function SolarUI:CreateWindow(args)
 				Option.TextTransparency = 1
 				Option.AutoButtonColor = false
 				Option.ZIndex = 100
-				Instance.new("UICorner", Option).CornerRadius = UDim.new(0, 6)
+				Option.Parent = DropFrame
+				corner(Option, 6)
 
-				local OptStroke = Instance.new("UIStroke", Option)
-				OptStroke.Thickness = 1.5
-				OptStroke.Transparency = 1
-				OptStroke.Color = ActiveTheme.Color
+				local OptStroke = stroke(Option, 1, ActiveTheme.Color, 1)
 
 				Option.MouseEnter:Connect(function()
 					TweenService:Create(Option, TweenInfo.new(0.15), {
-						BackgroundColor3 = Color3.fromRGB(32, 32, 40)
+						BackgroundColor3 = Color3.fromRGB(35, 35, 45)
 					}):Play()
 				end)
-
 				Option.MouseLeave:Connect(function()
 					TweenService:Create(Option, TweenInfo.new(0.15), {
-						BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+						BackgroundColor3 = Color3.fromRGB(25, 25, 30)
 					}):Play()
 				end)
 
@@ -622,49 +923,37 @@ function SolarUI:CreateWindow(args)
 					if multi then
 						if table.find(selected, v) then
 							table.remove(selected, table.find(selected, v))
-							TweenService:Create(OptStroke, TweenInfo.new(0.2), { Transparency = 1 }):Play()
+							TweenService:Create(OptStroke, TweenInfo.new(0.18), { Transparency = 1 }):Play()
 						else
 							table.insert(selected, v)
-							TweenService:Create(OptStroke, TweenInfo.new(0.2), { Transparency = 0.3 }):Play()
+							TweenService:Create(OptStroke, TweenInfo.new(0.18), { Transparency = 0.35 }):Play()
 						end
-
 						MainBtn.Text = #selected > 0 and ("Selected (" .. #selected .. ")") or "Select..."
 						callback(selected)
 					else
 						selected = v
 						for _, b in pairs(DropFrame:GetChildren()) do
 							if b:IsA("TextButton") then
-								local bStroke = b:FindFirstChildOfClass("UIStroke")
-								if bStroke then
-									TweenService:Create(bStroke, TweenInfo.new(0.2), { Transparency = 1 }):Play()
-								end
+								b.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
 							end
 						end
-
-						TweenService:Create(OptStroke, TweenInfo.new(0.2), { Transparency = 0.3 }):Play()
+						TweenService:Create(Option, TweenInfo.new(0.18), {
+							BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+						}):Play()
 
 						MainBtn.Text = v
 						open = false
-
-						TweenService:Create(DropFrame, TweenInfo.new(0.25), {
+						TweenService:Create(DropFrame, TweenInfo.new(0.22), {
 							Size = UDim2.new(0, 120, 0, 0)
 						}):Play()
-
-						task.delay(0.25, function()
-							DropFrame.Visible = false
-						end)
-
+						task.delay(0.22, function() DropFrame.Visible = false end)
 						callback(v)
 					end
 				end)
 			end
 
 			local Dropdown = { Value = selected }
-
-			function Dropdown:GetValue()
-				return self.Value
-			end
-
+			function Dropdown:GetValue() return self.Value end
 			function Dropdown:SetValue(v)
 				if multi then
 					if type(v) == "table" then
@@ -681,202 +970,190 @@ function SolarUI:CreateWindow(args)
 				end
 			end
 
+			task.defer(function()
+				MainBtn.Position = UDim2.new(1, 0, 0, Holder.AbsoluteSize.Y/2)
+			end)
+
 			return Dropdown
 		end
 
 		function Tab:AddInput(args)
 			args = args or {}
-			local extraHeight = args.Description and 22 or 0
-			local Holder = createHolder(self.Page, CONTROL_HEIGHT + extraHeight)
+			local Holder = createHolder(self.Page, CONTROL_HEIGHT, args.Description ~= nil)
 
-			local Label = Instance.new("TextLabel", Holder)
-			Label.Position = UDim2.new(0, 0, 0, extraHeight > 0 and 4 or 11)
-			Label.Size = UDim2.new(1, -70, 0, 18)
+			local Label = Instance.new("TextLabel")
+			Label.Position = UDim2.new(0, 0, 0, args.Description and DESC_OFFSET_Y or 0)
+			Label.Size = UDim2.new(1, -140, 0, 18)
 			Label.TextXAlignment = Enum.TextXAlignment.Left
-			Label.TextYAlignment = Enum.TextYAlignment.Top
 			Label.BackgroundTransparency = 1
 			Label.TextSize = 14
 			Label.Text = args.Text or "Input"
 			Label.TextColor3 = Color3.fromRGB(255, 255, 255)
-			Label.Font = Enum.Font.GothamMedium
+			Label.Font = Enum.Font.Gotham
+			Label.Parent = Holder
 
 			if args.Description then
-				local Desc = Instance.new("TextLabel", Holder)
+				local Desc = Instance.new("TextLabel")
 				Desc.BackgroundTransparency = 1
-				Desc.Position = UDim2.new(0, 0, 0, 24)
-				Desc.Size = UDim2.new(1, -70, 0, 16)
+				Desc.Position = UDim2.new(0, 0, 0, 18 + DESC_OFFSET_Y)
+				Desc.Size = UDim2.new(1, -10, 0, 14)
 				Desc.Text = args.Description
-				Desc.TextColor3 = Color3.fromRGB(150, 150, 150)
-				Desc.TextSize = 11
+				Desc.TextColor3 = Color3.fromRGB(160, 160, 160)
+				Desc.TextSize = 12
 				Desc.Font = Enum.Font.Gotham
 				Desc.TextXAlignment = Enum.TextXAlignment.Left
-				Desc.TextYAlignment = Enum.TextYAlignment.Top
+				Desc.Parent = Holder
 			end
 
-			local Inputbox = Instance.new("TextBox", Holder)
-			Inputbox.AnchorPoint = Vector2.new(1, 0)
-			Inputbox.Position = UDim2.new(1, 0, 0, extraHeight > 0 and 4 or (CONTROL_HEIGHT - 28) / 2)
-			Inputbox.Size = UDim2.new(0, 60, 0, 28)
-			Inputbox.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
-			Inputbox.TextColor3 = ActiveTheme.Accent
-			Inputbox.TextSize = 13
-			Inputbox.Font = Enum.Font.GothamBold
+			local Inputbox = Instance.new("TextBox")
+			Inputbox.AnchorPoint = Vector2.new(1, 0.5)
+			Inputbox.Position = UDim2.new(1, -2, 0, Holder.AbsoluteSize.Y/2)
+			Inputbox.Size = UDim2.new(0, 120, 0, 24)
+			Inputbox.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+			Inputbox.TextSize = 14
+			Inputbox.Font = Enum.Font.Gotham
 			Inputbox.Text = args.Default or ""
 			Inputbox.PlaceholderText = "..."
-			Inputbox.PlaceholderColor3 = Color3.fromRGB(100, 100, 100)
 			Inputbox.ClearTextOnFocus = false
 			Inputbox.BorderSizePixel = 0
-			Instance.new("UICorner", Inputbox).CornerRadius = UDim.new(0, 6)
-			local stroke = Instance.new("UIStroke", Inputbox)
-			stroke.Color = ActiveTheme.Color
-			stroke.Transparency = 0.4
-			stroke.Thickness = 1
-			stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+			Inputbox.TextColor3 = ActiveTheme.Accent
+			Inputbox.Parent = Holder
+			corner(Inputbox, 6)
+			stroke(Inputbox, 1, ActiveTheme.Color, 0.3)
+			registerAccent(Inputbox, "TextColor3", "Accent")
 
-			if args.Callback then
-				Inputbox.FocusLost:Connect(function()
-					args.Callback(Inputbox.Text)
-				end)
-			end
+			task.defer(function()
+				Inputbox.Position = UDim2.new(1, -2, 0, Holder.AbsoluteSize.Y/2)
+			end)
 
 			return {
-				SetValue = function(_, t) Inputbox.Text = t end,
-				GetValue = function(_) return Inputbox.Text end
+				GetText = function() return Inputbox.Text end,
+				SetText = function(_, t) Inputbox.Text = t end,
+				Focus = function() Inputbox:CaptureFocus() end
 			}
 		end
 
 		function Tab:AddLabel(args)
 			args = args or {}
-			local extraHeight = args.Description and 22 or 0
-			local Holder = createHolder(self.Page, 50 + extraHeight)
+			local Holder = createHolder(self.Page, 45, args.Description ~= nil)
 
-			local BigLabel = Instance.new("TextLabel", Holder)
-			BigLabel.Position = UDim2.new(0, 0, 0, 2)
-			BigLabel.Size = UDim2.new(1, -10, 0, 20)
+			local BigLabel = Instance.new("TextLabel")
+			BigLabel.Position = UDim2.new(0, 0, 0, 0)
+			BigLabel.Size = UDim2.new(1, -PADDING_X, 0, 22)
 			BigLabel.BackgroundTransparency = 1
 			BigLabel.TextXAlignment = Enum.TextXAlignment.Left
-			BigLabel.TextYAlignment = Enum.TextYAlignment.Center
 			BigLabel.TextSize = 15
 			BigLabel.Font = Enum.Font.GothamBold
 			BigLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 			BigLabel.Text = args.Text or "Main Label"
+			BigLabel.Parent = Holder
 
-			local SubLabel = Instance.new("TextLabel", Holder)
-			SubLabel.Position = UDim2.new(0, 0, 0, 24)
-			SubLabel.Size = UDim2.new(1, -10, 0, 18)
+			local SubLabel = Instance.new("TextLabel")
+			SubLabel.Position = UDim2.new(0, 0, 0, 22)
+			SubLabel.Size = UDim2.new(1, -PADDING_X, 0, 18)
 			SubLabel.BackgroundTransparency = 1
 			SubLabel.TextXAlignment = Enum.TextXAlignment.Left
-			SubLabel.TextYAlignment = Enum.TextYAlignment.Center
 			SubLabel.TextSize = 13
 			SubLabel.Font = Enum.Font.Gotham
-			SubLabel.TextColor3 = Color3.fromRGB(160, 160, 160)
+			SubLabel.TextColor3 = Color3.fromRGB(170, 170, 170)
 			SubLabel.Text = args.SubText or "Subtext here"
+			SubLabel.Parent = Holder
 
 			if args.Description then
-				local Desc = Instance.new("TextLabel", Holder)
+				local Desc = Instance.new("TextLabel")
 				Desc.BackgroundTransparency = 1
-				Desc.Position = UDim2.new(0, 0, 1, -20)
-				Desc.Size = UDim2.new(1, -10, 0, 16)
+				Desc.Position = UDim2.new(0, 0, 1, -18)
+				Desc.Size = UDim2.new(1, -10, 0, 14)
 				Desc.Text = args.Description
-				Desc.TextColor3 = Color3.fromRGB(150, 150, 150)
-				Desc.TextSize = 11
+				Desc.TextColor3 = Color3.fromRGB(160, 160, 160)
+				Desc.TextSize = 12
 				Desc.Font = Enum.Font.Gotham
 				Desc.TextXAlignment = Enum.TextXAlignment.Left
+				Desc.Parent = Holder
 			end
-
-			return {
-				SetText = function(_, t) BigLabel.Text = t end,
-				SetSubText = function(_, t) SubLabel.Text = t end
-			}
 		end
-		
+
 		function Tab:AddColorPicker(args)
 			args = args or {}
-
 			local default = args.Default or Color3.fromRGB(255, 140, 0)
 			local callback = args.Callback or function() end
-			local extraHeight = args.Description and 22 or 0
 
-			local Holder = createHolder(self.Page, CONTROL_HEIGHT + extraHeight)
+			local Holder = createHolder(self.Page, CONTROL_HEIGHT, args.Description ~= nil)
 
-			local Label = Instance.new("TextLabel", Holder)
-			Label.Size = UDim2.new(1, -70, 0, 18)
-			Label.Position = UDim2.new(0, 0, 0, extraHeight > 0 and 4 or 11)
+			local Label = Instance.new("TextLabel")
+			Label.Size = UDim2.new(1, -140, 0, 18)
+			Label.Position = UDim2.new(0, 0, 0, args.Description and DESC_OFFSET_Y or 0)
 			Label.BackgroundTransparency = 1
-			Label.Font = Enum.Font.GothamMedium
+			Label.Font = Enum.Font.Gotham
 			Label.TextSize = 14
 			Label.TextColor3 = Color3.fromRGB(255, 255, 255)
 			Label.TextXAlignment = Enum.TextXAlignment.Left
-			Label.TextYAlignment = Enum.TextYAlignment.Top
 			Label.Text = args.Text or "Color"
+			Label.Parent = Holder
 
 			if args.Description then
-				local Desc = Instance.new("TextLabel", Holder)
+				local Desc = Instance.new("TextLabel")
 				Desc.BackgroundTransparency = 1
-				Desc.Position = UDim2.new(0, 0, 0, 24)
-				Desc.Size = UDim2.new(1, -70, 0, 16)
+				Desc.Position = UDim2.new(0, 0, 0, 18 + DESC_OFFSET_Y)
+				Desc.Size = UDim2.new(1, -10, 0, 14)
 				Desc.Font = Enum.Font.Gotham
-				Desc.TextSize = 11
-				Desc.TextColor3 = Color3.fromRGB(150, 150, 150)
+				Desc.TextSize = 12
+				Desc.TextColor3 = Color3.fromRGB(160, 160, 160)
 				Desc.TextXAlignment = Enum.TextXAlignment.Left
-				Desc.TextYAlignment = Enum.TextYAlignment.Top
 				Desc.Text = args.Description
+				Desc.Parent = Holder
 			end
 
-			local ColorBtn = Instance.new("TextButton", Holder)
-			ColorBtn.AnchorPoint = Vector2.new(1, 0)
-			ColorBtn.Position = UDim2.new(1, 0, 0, extraHeight > 0 and 4 or (CONTROL_HEIGHT - 28) / 2)
-			ColorBtn.Size = UDim2.new(0, 56, 0, 28)
+			local ColorBtn = Instance.new("TextButton")
+			ColorBtn.AnchorPoint = Vector2.new(1, 0.5)
+			ColorBtn.Position = UDim2.new(1, 0, 0, Holder.AbsoluteSize.Y/2)
+			ColorBtn.Size = UDim2.new(0, 60, 0, 22)
 			ColorBtn.BackgroundColor3 = default
 			ColorBtn.AutoButtonColor = false
 			ColorBtn.Text = ""
-			Instance.new("UICorner", ColorBtn).CornerRadius = UDim.new(0, 6)
-			local stroke = Instance.new("UIStroke", ColorBtn)
-			stroke.Color = ActiveTheme.Color
-			stroke.Transparency = 0.3
-			stroke.Thickness = 1.5
+			ColorBtn.Parent = Holder
+			corner(ColorBtn, 6)
+			stroke(ColorBtn, 1, ActiveTheme.Color, 0.3)
 
 			local Popup = Instance.new("Frame")
-			Popup.Parent = self.Page
 			Popup.AnchorPoint = Vector2.new(1, 0)
-			Popup.Size = UDim2.new(0, 230, 0, 210)
-			Popup.BackgroundColor3 = Color3.fromRGB(16, 16, 21)
+			Popup.Size = UDim2.new(0, 220, 0, 200)
+			Popup.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
 			Popup.Visible = false
 			Popup.ZIndex = 999
-			Instance.new("UICorner", Popup).CornerRadius = UDim.new(0, 8)
-			local popStroke = Instance.new("UIStroke", Popup)
-			popStroke.Color = ActiveTheme.Color
-			popStroke.Transparency = 0.4
+			Popup.Parent = self.Page
+			corner(Popup, 6)
+			stroke(Popup, 1, ActiveTheme.Color, 0.25)
 
-			local satVal = Instance.new("ImageButton", Popup)
-			satVal.Size = UDim2.new(1, -70, 1, -75)
+			local satVal = Instance.new("ImageButton")
+			satVal.Size = UDim2.new(1, -65, 1, -70)
 			satVal.Position = UDim2.new(0, 10, 0, 10)
 			satVal.AutoButtonColor = false
 			satVal.BorderSizePixel = 0
 			satVal.Image = "rbxassetid://4155801252"
 			satVal.ZIndex = 1000
 			satVal.BackgroundColor3 = Color3.fromHSV(0, 1, 1)
-			Instance.new("UICorner", satVal).CornerRadius = UDim.new(0, 6)
+			satVal.Parent = Popup
 
-			local svDot = Instance.new("Frame", satVal)
-			svDot.Size = UDim2.new(0, 8, 0, 8)
+			local svDot = Instance.new("Frame")
+			svDot.Size = UDim2.new(0, 6, 0, 6)
 			svDot.AnchorPoint = Vector2.new(0.5, 0.5)
-			svDot.Position = UDim2.new(1, -4, 0, 4)
+			svDot.Position = UDim2.new(1, -3, 0, 3)
 			svDot.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 			svDot.ZIndex = 1001
-			Instance.new("UICorner", svDot).CornerRadius = UDim.new(1, 0)
-			local svStroke = Instance.new("UIStroke", svDot)
-			svStroke.Color = Color3.fromRGB(0, 0, 0)
-			svStroke.Thickness = 2
+			svDot.Parent = satVal
+			corner(svDot, 100)
+			stroke(svDot, 1, Color3.fromRGB(0, 0, 0), 0)
 
-			local hueBar = Instance.new("Frame", Popup)
-			hueBar.Size = UDim2.new(0, 24, 1, -75)
-			hueBar.Position = UDim2.new(1, -38, 0, 10)
-			hueBar.BorderSizePixel = 0
+			local hueBar = Instance.new("Frame")
+			hueBar.Size = UDim2.new(0, 20, 1, -70)
+			hueBar.Position = UDim2.new(1, -35, 0, 10)
+			hueBar.BorderSizePixel = 1
+			hueBar.BorderColor3 = Color3.fromRGB(20, 20, 25)
 			hueBar.ZIndex = 1000
-			Instance.new("UICorner", hueBar).CornerRadius = UDim.new(0, 4)
+			hueBar.Parent = Popup
 
-			local hueGradient = Instance.new("UIGradient", hueBar)
+			local hueGradient = Instance.new("UIGradient")
 			hueGradient.Rotation = 90
 			hueGradient.Color = ColorSequence.new({
 				ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 0, 0)),
@@ -885,48 +1162,53 @@ function SolarUI:CreateWindow(args)
 				ColorSequenceKeypoint.new(0.50, Color3.fromRGB(0, 255, 255)),
 				ColorSequenceKeypoint.new(0.66, Color3.fromRGB(0, 0, 255)),
 				ColorSequenceKeypoint.new(0.83, Color3.fromRGB(255, 0, 255)),
-				ColorSequenceKeypoint.new(1.00, Color3.fromRGB(255, 0, 0)),
+				ColorSequenceKeypoint.new(1.00, Color3.fromRGB(255,  0, 0)),
 			})
+			hueGradient.Parent = hueBar
 
-			local hueDot = Instance.new("Frame", hueBar)
-			hueDot.Size = UDim2.new(1, 0, 0, 3)
+			local hueDot = Instance.new("Frame")
+			hueDot.Size = UDim2.new(1, 0, 0, 2)
 			hueDot.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 			hueDot.ZIndex = 1001
-			local hStroke = Instance.new("UIStroke", hueDot)
-			hStroke.Color = Color3.fromRGB(0, 0, 0)
+			hueDot.Parent = hueBar
+			stroke(hueDot, 1, Color3.fromRGB(0, 0, 0), 0)
 
-			local alphaBar = Instance.new("Frame", Popup)
-			alphaBar.Size = UDim2.new(1, -20, 0, 18)
-			alphaBar.Position = UDim2.new(0, 10, 1, -55)
-			alphaBar.BorderSizePixel = 0
+			local alphaBar = Instance.new("Frame")
+			alphaBar.Size = UDim2.new(1, -20, 0, 15)
+			alphaBar.Position = UDim2.new(0, 10, 1, -50)
+			alphaBar.BorderSizePixel = 1
+			alphaBar.BorderColor3 = Color3.fromRGB(20, 20, 25)
 			alphaBar.ZIndex = 1000
-			Instance.new("UICorner", alphaBar).CornerRadius = UDim.new(0, 4)
+			alphaBar.Parent = Popup
 
-			local alphaGradient = Instance.new("UIGradient", alphaBar)
+			local alphaGradient = Instance.new("UIGradient")
 			alphaGradient.Rotation = 0
 			alphaGradient.Color = ColorSequence.new({
 				ColorSequenceKeypoint.new(0, Color3.new(0, 0, 0)),
 				ColorSequenceKeypoint.new(1, Color3.new(1, 1, 1)),
 			})
+			alphaGradient.Parent = alphaBar
 
-			local alphaDot = Instance.new("Frame", alphaBar)
-			alphaDot.Size = UDim2.new(0, 3, 1, 0)
+			local alphaDot = Instance.new("Frame")
+			alphaDot.Size = UDim2.new(0, 2, 1, 0)
 			alphaDot.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 			alphaDot.ZIndex = 1001
-			local aStroke = Instance.new("UIStroke", alphaDot)
-			aStroke.Color = Color3.fromRGB(0, 0, 0)
+			alphaDot.Parent = alphaBar
+			stroke(alphaDot, 1, Color3.fromRGB(0, 0, 0), 0)
 
-			local rgbLabel = Instance.new("TextLabel", Popup)
+			local rgbLabel = Instance.new("TextLabel")
 			rgbLabel.AnchorPoint = Vector2.new(0.5, 1)
-			rgbLabel.Position = UDim2.new(0.5, 0, 1, -6)
-			rgbLabel.Size = UDim2.new(0.9, 0, 0, 18)
+			rgbLabel.Position = UDim2.new(0.5, 0, 1, -5)
+			rgbLabel.Size = UDim2.new(0.9, 0, 0, 16)
 			rgbLabel.BackgroundTransparency = 1
 			rgbLabel.Font = Enum.Font.Gotham
-			rgbLabel.TextSize = 11
+			rgbLabel.TextSize = 12
 			rgbLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
 			rgbLabel.TextXAlignment = Enum.TextXAlignment.Center
 			rgbLabel.ZIndex = 1001
+			rgbLabel.Parent = Popup
 
+			-- state
 			local hue, sat, val = default:ToHSV()
 			local alpha = 1
 			local Color = default
@@ -935,13 +1217,13 @@ function SolarUI:CreateWindow(args)
 			local function updatePopupPos()
 				local absPos = Holder.AbsolutePosition
 				local absSize = Holder.AbsoluteSize
-				Popup.Position = UDim2.fromOffset(absPos.X + absSize.X - 60, absPos.Y + absSize.Y + 6)
+				Popup.Position = UDim2.fromOffset(absPos.X + absSize.X - 50, absPos.Y + absSize.Y + 4)
 			end
 
 			local function updateLabels()
 				local r, g, b = math.floor(Color.R * 255), math.floor(Color.G * 255), math.floor(Color.B * 255)
 				local hex = string.format("#%02X%02X%02X", r, g, b)
-				rgbLabel.Text = string.format("RGB: %d, %d, %d | %s", r, g, b, hex)
+				rgbLabel.Text = string.format("RGB: %d, %d, %d | %s | A: %.2f", r, g, b, hex, alpha)
 			end
 
 			local function updateColor()
@@ -976,25 +1258,15 @@ function SolarUI:CreateWindow(args)
 			end
 
 			local draggingSV, draggingHue, draggingAlpha = false, false, false
-
-			satVal.InputBegan:Connect(function(input)
-				if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingSV = true updateSatVal(input) end
-			end)
-
-			hueBar.InputBegan:Connect(function(input)
-				if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingHue = true updateHue(input) end
-			end)
-
-			alphaBar.InputBegan:Connect(function(input)
-				if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingAlpha = true updateAlpha(input) end
-			end)
+			satVal.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingSV = true updateSatVal(input) end end)
+			hueBar.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingHue = true updateHue(input) end end)
+			alphaBar.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingAlpha = true updateAlpha(input) end end)
 
 			UIS.InputEnded:Connect(function(input)
 				if input.UserInputType == Enum.UserInputType.MouseButton1 then
 					draggingSV, draggingHue, draggingAlpha = false, false, false
 				end
 			end)
-
 			UIS.InputChanged:Connect(function(input)
 				if input.UserInputType == Enum.UserInputType.MouseMovement then
 					if draggingSV then updateSatVal(input) end
@@ -1007,23 +1279,22 @@ function SolarUI:CreateWindow(args)
 				open = not open
 				updatePopupPos()
 				Popup.Visible = open
-
-				TweenService:Create(Popup, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+				TweenService:Create(Popup, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
 					BackgroundTransparency = open and 0 or 1
 				}):Play()
 				if not open then
-					task.delay(0.25, function() Popup.Visible = false end)
+					task.delay(0.22, function() if Popup then Popup.Visible = false end end)
 				end
 			end)
 
+			-- Init
 			updateColor()
+			task.defer(function()
+				ColorBtn.Position = UDim2.new(1, 0, 0, Holder.AbsoluteSize.Y/2)
+			end)
 
 			local Picker = { Value = Color, Alpha = alpha }
-
-			function Picker:GetValue()
-				return self.Value, self.Alpha
-			end
-
+			function Picker:GetValue() return self.Value, self.Alpha end
 			function Picker:SetValue(c, a)
 				Color = c
 				alpha = a or 1
@@ -1035,67 +1306,63 @@ function SolarUI:CreateWindow(args)
 
 			return Picker
 		end
-		
+
 		function Tab:AddKeybind(args)
 			args = args or {}
-
 			local defaultKey = args.Default or Enum.KeyCode.RightShift
 			local callback = args.Callback or function() end
-			local extraHeight = args.Description and 22 or 0
 
-			local Holder = createHolder(self.Page, CONTROL_HEIGHT + extraHeight)
+			local Holder = createHolder(self.Page, CONTROL_HEIGHT, args.Description ~= nil)
 
-			local Label = Instance.new("TextLabel", Holder)
-			Label.Size = UDim2.new(1, -130, 0, 18)
-			Label.Position = UDim2.new(0, 0, 0, extraHeight > 0 and 4 or 11)
+			local Label = Instance.new("TextLabel")
+			Label.Size = UDim2.new(1, -140, 0, 18)
+			Label.Position = UDim2.new(0, 0, 0, args.Description and DESC_OFFSET_Y or 0)
 			Label.BackgroundTransparency = 1
-			Label.Font = Enum.Font.GothamMedium
+			Label.Font = Enum.Font.Gotham
 			Label.TextSize = 14
 			Label.TextColor3 = Color3.fromRGB(255, 255, 255)
 			Label.TextXAlignment = Enum.TextXAlignment.Left
-			Label.TextYAlignment = Enum.TextYAlignment.Top
 			Label.Text = args.Text or "Keybind"
+			Label.Parent = Holder
 
 			if args.Description then
-				local Desc = Instance.new("TextLabel", Holder)
+				local Desc = Instance.new("TextLabel")
 				Desc.BackgroundTransparency = 1
-				Desc.Position = UDim2.new(0, 0, 0, 24)
-				Desc.Size = UDim2.new(1, -130, 0, 16)
+				Desc.Position = UDim2.new(0, 0, 0, 18 + DESC_OFFSET_Y)
+				Desc.Size = UDim2.new(1, -10, 0, 14)
 				Desc.Font = Enum.Font.Gotham
-				Desc.TextSize = 11
-				Desc.TextColor3 = Color3.fromRGB(150, 150, 150)
+				Desc.TextSize = 12
+				Desc.TextColor3 = Color3.fromRGB(160, 160, 160)
 				Desc.TextXAlignment = Enum.TextXAlignment.Left
-				Desc.TextYAlignment = Enum.TextYAlignment.Top
 				Desc.Text = args.Description
+				Desc.Parent = Holder
 			end
 
-			local KeyButton = Instance.new("TextButton", Holder)
-			KeyButton.AnchorPoint = Vector2.new(1, 0)
-			KeyButton.Position = UDim2.new(1, 0, 0, extraHeight > 0 and 4 or (CONTROL_HEIGHT - 30) / 2)
-			KeyButton.Size = UDim2.new(0, 120, 0, 30)
-			KeyButton.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+			local KeyButton = Instance.new("TextButton")
+			KeyButton.AnchorPoint = Vector2.new(1, 0.5)
+			KeyButton.Position = UDim2.new(1, 0, 0, Holder.AbsoluteSize.Y/2)
+			KeyButton.Size = UDim2.new(0, 120, 0, 28)
+			KeyButton.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
 			KeyButton.TextColor3 = ActiveTheme.Color
 			KeyButton.Font = Enum.Font.GothamBold
 			KeyButton.TextSize = 13
 			KeyButton.Text = defaultKey.Name
 			KeyButton.AutoButtonColor = false
-			Instance.new("UICorner", KeyButton).CornerRadius = UDim.new(0, 6)
-
-			local stroke = Instance.new("UIStroke", KeyButton)
-			stroke.Color = ActiveTheme.Color
-			stroke.Transparency = 0.4
-			stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+			KeyButton.Parent = Holder
+			corner(KeyButton, 6)
+			stroke(KeyButton, 1, ActiveTheme.Color, 0.3)
+			registerAccent(KeyButton, "TextColor3", "Color")
 
 			local binding = false
 			local currentKey = defaultKey
 
-			local function animatePress()
-				TweenService:Create(KeyButton, TweenInfo.new(0.1), {
+			local function pressFX()
+				TweenService:Create(KeyButton, TweenInfo.new(0.08), {
 					BackgroundColor3 = Color3.fromRGB(25, 25, 30)
 				}):Play()
 				task.delay(0.1, function()
-					TweenService:Create(KeyButton, TweenInfo.new(0.2), {
-						BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+					TweenService:Create(KeyButton, TweenInfo.new(0.18), {
+						BackgroundColor3 = Color3.fromRGB(12, 12, 16)
 					}):Play()
 				end)
 			end
@@ -1104,7 +1371,7 @@ function SolarUI:CreateWindow(args)
 				if binding then return end
 				binding = true
 				KeyButton.Text = "..."
-				animatePress()
+				pressFX()
 
 				local conn
 				conn = UIS.InputBegan:Connect(function(input)
@@ -1139,17 +1406,16 @@ function SolarUI:CreateWindow(args)
 				end
 			end)
 
+			task.defer(function()
+				KeyButton.Position = UDim2.new(1, 0, 0, Holder.AbsoluteSize.Y/2)
+			end)
+
 			local Keybind = { Value = currentKey }
-
-			function Keybind:GetValue()
-				return self.Value
-			end
-
+			function Keybind:GetValue() return self.Value end
 			function Keybind:SetValue(v)
 				currentKey = v
 				KeyButton.Text = v.Name or tostring(v)
 			end
-
 			return Keybind
 		end
 
@@ -1157,145 +1423,12 @@ function SolarUI:CreateWindow(args)
 		return Tab
 	end
 
+	-- animate theme on open
+	tweenThemeTo(ActiveTheme, 0.001)
+	setBlurEnabled(true)
+
+	-- expose
 	return Window
 end
 
-return SolarUI = UDim2.new(1, -45, 0, 16)
-				Desc.Text = args.Description
-				Desc.TextColor3 = Color3.fromRGB(150, 150, 150)
-				Desc.TextSize = 11
-				Desc.Font = Enum.Font.Gotham
-				Desc.TextXAlignment = Enum.TextXAlignment.Left
-			end
-
-			local state = args.Default or false
-			local Toggle = {}
-
-			local function animate(active)
-				local imgTarget = active and 0.1 or 1
-				TweenService:Create(Btn, TweenInfo.new(0.2), {ImageTransparency = imgTarget}):Play()
-			end
-
-			function Toggle:SetState(x)
-				state = x
-				animate(state)
-				if args.Callback then args.Callback(state) end
-			end
-
-			function Toggle:GetState()
-				return state
-			end
-
-			Btn.MouseButton1Click:Connect(function()
-				Toggle:SetState(not state)
-			end)
-
-			Toggle:SetState(state)
-			return Toggle
-		end
-
-		function Tab:AddButton(args)
-			args = args or {}
-			local extraHeight = args.Description and 22 or 0
-			local Holder = createHolder(self.Page, CONTROL_HEIGHT + extraHeight)
-
-			local Button = Instance.new("TextButton", Holder)
-			Button.Size = UDim2.new(1, 0, 0, 18)
-			Button.Position = UDim2.new(0, 0, 0, extraHeight > 0 and 4 or 11)
-			Button.BackgroundTransparency = 1
-			Button.Font = Enum.Font.GothamMedium
-			Button.TextSize = 14
-			Button.TextColor3 = Color3.new(1, 1, 1)
-			Button.Text = args.Text or "Button"
-			Button.AutoButtonColor = false
-			Button.TextXAlignment = Enum.TextXAlignment.Left
-			Button.TextYAlignment = Enum.TextYAlignment.Top
-
-			if args.Description then
-				local Desc = Instance.new("TextLabel", Holder)
-				Desc.BackgroundTransparency = 1
-				Desc.Position = UDim2.new(0, 0, 0, 24)
-				Desc.Size = UDim2.new(1, -10, 0, 16)
-				Desc.Text = args.Description
-				Desc.TextColor3 = Color3.fromRGB(150, 150, 150)
-				Desc.TextSize = 11
-				Desc.Font = Enum.Font.Gotham
-				Desc.TextXAlignment = Enum.TextXAlignment.Left
-				Desc.TextYAlignment = Enum.TextYAlignment.Top
-			end
-
-			Button.MouseEnter:Connect(function()
-				TweenService:Create(Button, TweenInfo.new(0.15), { TextColor3 = ActiveTheme.Color }):Play()
-			end)
-			Button.MouseLeave:Connect(function()
-				TweenService:Create(Button, TweenInfo.new(0.15), { TextColor3 = Color3.new(1, 1, 1) }):Play()
-			end)
-			Button.MouseButton1Click:Connect(function()
-				if args.Callback then args.Callback() end
-			end)
-
-			return {
-				SetText = function(_, t) Button.Text = t end
-			}
-		end
-
-		function Tab:AddSlider(args)
-			args = args or {}
-			local min = args.Min or 0
-			local max = args.Max or 100
-			local default = args.Default or min
-			local callback = args.Callback or function() end
-			local extraHeight = args.Description and 22 or 0
-
-			local Holder = createHolder(self.Page, 60 + extraHeight)
-
-			local Row = Instance.new("Frame", Holder)
-			Row.BackgroundTransparency = 1
-			Row.Position = UDim2.new(0, 0, 0, 4)
-			Row.Size = UDim2.new(1, 0, 0, 22)
-
-			local Title = Instance.new("TextLabel", Row)
-			Title.BackgroundTransparency = 1
-			Title.Position = UDim2.new(0, 0, 0, 0)
-			Title.Size = UDim2.new(1, -60, 1, 0)
-			Title.Font = Enum.Font.GothamMedium
-			Title.TextSize = 14
-			Title.TextColor3 = Color3.new(1, 1, 1)
-			Title.TextXAlignment = Enum.TextXAlignment.Left
-			Title.Text = args.Text or "Slider"
-
-			local ValueLabel = Instance.new("TextLabel", Row)
-			ValueLabel.BackgroundTransparency = 1
-			ValueLabel.AnchorPoint = Vector2.new(1, 0)
-			ValueLabel.Position = UDim2.new(1, 0, 0, 0)
-			ValueLabel.Size = UDim2.new(0, 50, 1, 0)
-			ValueLabel.Font = Enum.Font.GothamBold
-			ValueLabel.TextSize = 13
-			ValueLabel.TextColor3 = ActiveTheme.Color
-			ValueLabel.TextXAlignment = Enum.TextXAlignment.Right
-
-			local Bar = Instance.new("Frame", Holder)
-			Bar.AnchorPoint = Vector2.new(0.5, 0)
-			Bar.Position = UDim2.new(0.5, 0, 0, 32)
-			Bar.Size = UDim2.new(1, 0, 0, 8)
-			Bar.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
-			Instance.new("UICorner", Bar).CornerRadius = UDim.new(0, 4)
-
-			local Fill = Instance.new("Frame", Bar)
-			Fill.Size = UDim2.new(0, 0, 1, 0)
-			Fill.BackgroundColor3 = ActiveTheme.Color
-			Instance.new("UICorner", Fill).CornerRadius = UDim.new(0, 4)
-
-			local DragBtn = Instance.new("ImageButton", Fill)
-			DragBtn.AnchorPoint = Vector2.new(0.5, 0.5)
-			DragBtn.Position = UDim2.fromScale(1, 0.5)
-			DragBtn.Size = UDim2.new(0, 14, 0, 14)
-			DragBtn.BackgroundColor3 = ActiveTheme.Color
-			Instance.new("UICorner", DragBtn).CornerRadius = UDim.new(1, 0)
-			DragBtn.AutoButtonColor = false
-
-			if args.Description then
-				local Desc = Instance.new("TextLabel", Holder)
-				Desc.BackgroundTransparency = 1
-				Desc.Position = UDim2.new(0, 0, 1, -20)
-				Desc.Size
+return SolarUI
