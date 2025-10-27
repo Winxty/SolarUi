@@ -588,53 +588,95 @@ function SolarUI:CreateWindow(args)
 		end
 
 		function Tab:AddToggle(args)
-			args = args or {}
-			local Holder = createHolder(self.Page, CONTROL_HEIGHT, args.Description ~= nil)
-			addLabelAndDesc(Holder, args.Text or "Toggle", args.Description)
+	args = args or {}
+	local hasDesc = args.Description ~= nil
 
-			local Btn = Instance.new("ImageButton")
-			Btn.AnchorPoint = Vector2.new(1, 0.5)
-			Btn.Position = UDim2.new(1, 0, 0, args.Description and 19 or Holder.AbsoluteSize.Y/2) -- gets corrected after render
-			Btn.Size = UDim2.new(0, 30, 0, 30)
-			Btn.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
-			Btn.Image = SolarUI.Icons.Checkmark
-			Btn.ImageTransparency = 1
-			Btn.AutoButtonColor = false
-			Btn.Parent = Holder
-			corner(Btn, 6)
-			stroke(Btn, 1, ActiveTheme.Color, 0.35)
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(0.94, 0, 0, hasDesc and 60 or 42)
+	Holder.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
+	Holder.Parent = self.Page
+	corner(Holder, 8)
+	pad(Holder, PADDING_X, PADDING_X, 8, 8)
+	stroke(Holder, 1, ActiveTheme.Color, 0.25)
+	addGlow(Holder, ActiveTheme.Color, 0.96)
 
-			local state = (args.Default == true)
-			local function animate(active)
-				TweenService:Create(Btn, TweenInfo.new(0.18), {
-					ImageTransparency = active and 0.15 or 1,
-					BackgroundColor3 = active and Color3.fromRGB(18,18,24) or Color3.fromRGB(12,12,16)
-				}):Play()
-			end
+	-- text label
+	local Label = Instance.new("TextLabel")
+	Label.Size = UDim2.new(1, -50, 0, 18)
+	Label.Text = args.Text or "Toggle"
+	Label.Font = Enum.Font.Gotham
+	Label.TextSize = 14
+	Label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	Label.BackgroundTransparency = 1
+	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Position = UDim2.new(0, 0, 0, hasDesc and 0 or 6)
+	Label.Parent = Holder
 
-			local Toggle = {}
-			function Toggle:SetState(x)
-				state = x and true or false
-				animate(state)
-				if args.Callback then
-					task.spawn(args.Callback, state)
-				end
-			end
-			function Toggle:GetState() return state end
+	if hasDesc then
+		local Desc = Instance.new("TextLabel")
+		Desc.BackgroundTransparency = 1
+		Desc.Position = UDim2.new(0, 0, 0, 22)
+		Desc.Size = UDim2.new(1, -60, 0, 16)
+		Desc.Text = args.Description
+		Desc.TextColor3 = Color3.fromRGB(160, 160, 160)
+		Desc.TextSize = 12
+		Desc.Font = Enum.Font.Gotham
+		Desc.TextXAlignment = Enum.TextXAlignment.Left
+		Desc.Parent = Holder
+	end
 
-			Btn.MouseButton1Click:Connect(function()
-				Toggle:SetState(not state)
-			end)
+	-- toggle box
+	local Btn = Instance.new("ImageButton")
+	Btn.AnchorPoint = Vector2.new(1, 0.5)
+	Btn.Position = UDim2.new(1, -4, 0.5, 0)
+	Btn.Size = UDim2.new(0, 26, 0, 26)
+	Btn.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+	Btn.Image = SolarUI.Icons.Checkmark
+	Btn.ImageTransparency = 1
+	Btn.AutoButtonColor = false
+	Btn.Parent = Holder
+	corner(Btn, 6)
+	stroke(Btn, 1, ActiveTheme.Color, 0.35)
 
-			-- fix vertical center after first frame
-			task.defer(function()
-				local yCenter = Holder.AbsoluteSize.Y/2
-				Btn.Position = UDim2.new(1, 0, 0, yCenter)
-			end)
+	local state = (args.Default == true)
+	local function animate(active)
+		TweenService:Create(Btn, TweenInfo.new(0.18), {
+			ImageTransparency = active and 0.15 or 1,
+			BackgroundColor3 = active and ActiveTheme.Color or Color3.fromRGB(12, 12, 16)
+		}):Play()
+	end
 
-			Toggle:SetState(state)
-			return Toggle
+	local Toggle = {}
+	function Toggle:SetState(x)
+		state = x and true or false
+		animate(state)
+		if args.Callback then
+			task.spawn(args.Callback, state)
 		end
+	end
+	function Toggle:GetState()
+		return state
+	end
+
+	Btn.MouseButton1Click:Connect(function()
+		Toggle:SetState(not state)
+	end)
+
+	Toggle:SetState(state)
+
+	-- lil hover feedback
+	Btn.MouseEnter:Connect(function()
+		TweenService:Create(Btn, TweenInfo.new(0.15), {
+			BackgroundColor3 = state and ActiveTheme.Accent or Color3.fromRGB(18, 18, 22)
+		}):Play()
+	end)
+	Btn.MouseLeave:Connect(function()
+		animate(state)
+	end)
+
+	return Toggle
+end
+
 
 		function Tab:AddButton(args)
 			args = args or {}
